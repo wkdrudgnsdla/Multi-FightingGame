@@ -127,7 +127,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     {
         if (r == null)
         {
-            SetStatus($"立加肯丰 0/{maxPlayers}");
+            SetStatus($"Connected 0/{maxPlayers}");
             return;
         }
 
@@ -143,7 +143,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
 
         count = Mathf.Clamp(count, 0, maxPlayers);
-        SetStatus($"立加肯丰 {count}/{maxPlayers}");
+        SetStatus($"Connected {count}/{maxPlayers}");
     }
 
     string GenerateRoomCode(int length)
