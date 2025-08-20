@@ -1,0 +1,363 @@
+using System;
+using System.Text;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using Fusion;
+using Fusion.Sockets;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+using UnityEngine.UI;
+
+public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
+{
+    [Header("UI 연결")]
+    public Text statusText;
+    public Text roomCodeText;
+    public InputField joinInput;
+    public Button createBtn;
+    public Button joinBtn;
+
+    [Header("패널")]
+    public GameObject panelsRoot; // Panels 루트 (다른 코드가 Start()에서 비활성화할 수 있음)
+    public GameObject hostPanel;   // 호스트 전용 UI 패널
+    public GameObject GuestPanel;  // 게스트 전용 UI 패널
+
+    [Header("설정")]
+    public int roomCodeLength = 8;
+    public int maxPlayers = 2;
+
+    private NetworkRunner runner;
+    private NetworkSceneManagerDefault sceneManagerComponent;
+    private bool isHost = false; // 이 인스턴스가 Host인지 (로컬 플래그)
+
+    void Awake()
+    {
+        if (createBtn != null) createBtn.onClick.AddListener(() => CreateRoomAsync());
+        if (joinBtn != null) joinBtn.onClick.AddListener(() => JoinRoomAsync(joinInput != null ? joinInput.text.Trim() : ""));
+
+        AutoFindPanelsIfMissing();
+        ApplyRoleUI(); // 초기 UI 적용 (기본: guest view)
+    }
+
+    // 자동 탐색: 비활성 오브젝트 포함해서 찾음
+    void AutoFindPanelsIfMissing()
+    {
+        if (panelsRoot == null)
+        {
+            panelsRoot = FindGameObjectAnywhereByName("Panels")
+                      ?? FindGameObjectAnywhereByName("panels")
+                      ?? FindGameObjectAnywhereByName("PanelsRoot")
+                      ?? FindGameObjectAnywhereByName("panelsRoot");
+            if (panelsRoot != null) Debug.Log($"[RoomManager] panelsRoot 자동 할당: {panelsRoot.name}");
+        }
+
+        if (hostPanel == null)
+        {
+            hostPanel = FindGameObjectAnywhereByName("hostPanel")
+                     ?? FindGameObjectAnywhereByName("HostPanel");
+            if (hostPanel != null) Debug.Log($"[RoomManager] hostPanel 자동 할당: {hostPanel.name}");
+        }
+
+        if (GuestPanel == null)
+        {
+            GuestPanel = FindGameObjectAnywhereByName("GuestPanel")
+                       ?? FindGameObjectAnywhereByName("guestPanel")
+                       ?? FindGameObjectAnywhereByName("ClientPanel")
+                       ?? FindGameObjectAnywhereByName("clientpanel");
+            if (GuestPanel != null) Debug.Log($"[RoomManager] GuestPanel 자동 할당: {GuestPanel.name}");
+        }
+
+        if (panelsRoot == null)
+            Debug.LogWarning("[RoomManager] panelsRoot가 자동으로 할당되지 않았습니다. Inspector에 Panels 루트를 할당하세요.");
+        if (hostPanel == null)
+            Debug.LogWarning("[RoomManager] hostPanel이 자동으로 할당되지 않았습니다. Inspector에 HostPanel을 연결하세요.");
+        if (GuestPanel == null)
+            Debug.LogWarning("[RoomManager] GuestPanel이 자동으로 할당되지 않았습니다. Inspector에 GuestPanel을 연결하세요.");
+    }
+
+    GameObject FindGameObjectAnywhereByName(string name)
+    {
+        try
+        {
+            var all = Resources.FindObjectsOfTypeAll<GameObject>();
+            for (int i = 0; i < all.Length; i++)
+            {
+                var go = all[i];
+                if (go != null && go.name == name)
+                    return go;
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[RoomManager] FindGameObjectAnywhereByName 실패: " + e.Message);
+        }
+        return null;
+    }
+
+    // Panels 루트가 비활성 상태여도 강제 활성화
+    void EnsurePanelsVisible()
+    {
+        if (panelsRoot != null && !panelsRoot.activeSelf)
+        {
+            panelsRoot.SetActive(true);
+            Debug.Log("[RoomManager] panelsRoot 강제 활성화");
+        }
+        else if (panelsRoot == null)
+        {
+            Debug.LogWarning("[RoomManager] EnsurePanelsVisible: panelsRoot가 할당되어 있지 않습니다. Inspector에 할당하거나 오브젝트 이름을 확인하세요.");
+        }
+    }
+
+    // UI 토글 및 디버그 로그 추가
+    void ApplyRoleUI()
+    {
+        Debug.Log($"ApplyRoleUI 호출: isHost={isHost}, panelsRoot_active={(panelsRoot != null ? panelsRoot.activeSelf.ToString() : "null")}");
+
+        if (hostPanel != null) hostPanel.SetActive(isHost);
+        if (GuestPanel != null) GuestPanel.SetActive(!isHost);
+
+        if (roomCodeText != null) roomCodeText.gameObject.SetActive(isHost);
+    }
+
+    void SetStatus(string msg)
+    {
+        Debug.Log("Status: " + msg);
+        if (statusText != null) statusText.text = msg;
+    }
+
+    string GenerateRoomCode(int length)
+    {
+        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        var sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++)
+            sb.Append(chars[UnityEngine.Random.Range(0, chars.Length)]);
+        return sb.ToString();
+    }
+
+    async Task ShutdownRunner()
+    {
+        try
+        {
+            if (runner != null)
+            {
+                try { runner.Shutdown(false); } catch (Exception e) { Debug.LogWarning("Runner.Shutdown 예외: " + e.Message); }
+                await Task.Delay(100);
+                Destroy(runner);
+                runner = null;
+                Debug.Log("Runner 종료 및 정리 완료");
+            }
+        }
+        catch (Exception ex) { Debug.LogWarning("ShutdownRunner 예외: " + ex.Message); }
+    }
+
+    // Host 생성: panels 강제 활성화 후 UI 전환
+    public async void CreateRoomAsync()
+    {
+        EnsurePanelsVisible();
+
+        isHost = true;
+        ApplyRoleUI();
+
+        if (runner != null) await ShutdownRunner();
+
+        int buildIndex = SceneManager.GetActiveScene().buildIndex;
+        if (buildIndex < 0)
+        {
+            SetStatus("오류: 현재 씬이 Build Settings에 등록되어 있지 않습니다.");
+            Debug.LogWarning("Build Settings에 현재 씬을 추가하세요 (File > Build Settings > Add Open Scenes).");
+            isHost = false;
+            ApplyRoleUI();
+            return;
+        }
+
+        var sceneRef = SceneRef.FromIndex(buildIndex);
+        var sceneInfo = new NetworkSceneInfo();
+        sceneInfo.AddSceneRef(sceneRef, LoadSceneMode.Single);
+
+        runner = gameObject.AddComponent<NetworkRunner>();
+        runner.ProvideInput = true;
+        runner.AddCallbacks(this);
+
+        if (sceneManagerComponent == null)
+            sceneManagerComponent = gameObject.AddComponent<NetworkSceneManagerDefault>();
+
+        const int maxTries = 5;
+        bool created = false;
+        for (int attempt = 0; attempt < maxTries; attempt++)
+        {
+            string code = GenerateRoomCode(roomCodeLength);
+            SetStatus($"방 생성 시도 {attempt + 1}/{maxTries} - 코드: {code}");
+            Debug.Log($"방 생성 시도: {code}");
+
+            var args = new StartGameArgs
+            {
+                GameMode = GameMode.Host,
+                SessionName = code,
+                Scene = sceneInfo,
+                SceneManager = sceneManagerComponent
+            };
+
+            try
+            {
+                await runner.StartGame(args);
+
+                if (runner != null && runner.IsRunning)
+                {
+                    created = true;
+                    if (roomCodeText != null) roomCodeText.text = code;
+                    SetStatus($"방 생성 완료 (코드: {code})");
+                    Debug.Log($"방 생성 성공: {code}");
+                    break;
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"StartGame 실패: {e.Message}");
+            }
+
+            if (runner != null) { Destroy(runner); runner = null; }
+            await Task.Delay(200);
+        }
+
+        if (!created)
+        {
+            SetStatus("방 생성 실패 (중복 문제 해결 불가)");
+            Debug.LogWarning("방 생성에 실패했습니다.");
+            isHost = false;
+            ApplyRoleUI();
+            if (runner != null) { await ShutdownRunner(); }
+        }
+    }
+
+    // Guest: 접속 시도 (최종 UI 갱신은 OnConnectedToServer에서 처리)
+    public async void JoinRoomAsync(string code)
+    {
+        code = (code ?? "").Trim();
+        if (string.IsNullOrEmpty(code))
+        {
+            SetStatus("입장할 방 코드를 입력하세요.");
+            return;
+        }
+
+        isHost = false;
+        ApplyRoleUI();
+
+        if (runner != null) await ShutdownRunner();
+
+        runner = gameObject.AddComponent<NetworkRunner>();
+        runner.ProvideInput = true;
+        runner.AddCallbacks(this);
+
+        var args = new StartGameArgs
+        {
+            GameMode = GameMode.Client,
+            SessionName = code,
+            SceneManager = sceneManagerComponent
+        };
+
+        try
+        {
+            await runner.StartGame(args);
+            SetStatus("방 접속 시도 중...");
+            Debug.Log($"Join StartGame 호출: {code}");
+            // Host에서 거부하면 OnDisconnectedFromServer가 호출됨
+        }
+        catch (Exception e)
+        {
+            SetStatus($"입장 실패: {e.Message}");
+            Debug.LogWarning($"Join StartGame 예외: {e.Message}");
+            if (runner != null) { Destroy(runner); runner = null; }
+        }
+    }
+
+    // ============================
+    // INetworkRunnerCallbacks
+    // ============================
+
+    // Host: 새 플레이어 접속 감지 -> 정원 초과면 강제 퇴장
+    public void OnPlayerJoined(NetworkRunner r, PlayerRef player)
+    {
+        int count = r.ActivePlayers.Count();
+        Debug.Log($"[Host] 플레이어 접속 감지. 현재 인원: {count}");
+        if (count > maxPlayers)
+        {
+            Debug.Log($"정원 초과: {count} > {maxPlayers}. 해당 플레이어 강제 퇴장시킵니다.");
+            r.Disconnect(player);
+        }
+    }
+
+    public void OnPlayerLeft(NetworkRunner r, PlayerRef player)
+    {
+        Debug.Log("[Host] 플레이어 퇴장 감지.");
+    }
+
+    // **중요**: 클라이언트/호스트 전부에서 연결이 완전히 이루어진 시점
+    public void OnConnectedToServer(NetworkRunner r)
+    {
+        Debug.Log("OnConnectedToServer 호출됨.");
+
+        // 강제로 panels 보이게 하고 UI 갱신
+        EnsurePanelsVisible();
+
+        if (!isHost)
+        {
+            // 클라이언트(게스트) 입장 완료 처리
+            ApplyRoleUI();                // GuestPanel 활성화
+            SetStatus("입장 완료");
+            Debug.Log("클라이언트: 입장 완료, GuestPanel 활성화");
+        }
+        else
+        {
+            // 호스트는 이미 isHost=true 상태(생성 UI는 이미 보임)
+            ApplyRoleUI();
+            SetStatus("호스트: 세션 실행 중");
+            Debug.Log("호스트: OnConnectedToServer - 세션 실행 중");
+        }
+    }
+
+    // 연결 끊김(거부 포함)
+    public void OnDisconnectedFromServer(NetworkRunner r, NetDisconnectReason reason)
+    {
+        Debug.Log($"OnDisconnectedFromServer 호출. 이유: {reason}");
+
+        if (!isHost)
+        {
+            SetStatus("입장 실패: 방이 가득 차 있거나 호스트가 연결을 끊었습니다.");
+            Debug.Log("클라이언트: 입장 거부 또는 연결 끊김");
+            _ = ShutdownRunner();
+        }
+        else
+        {
+            SetStatus("호스트 연결 종료.");
+            _ = ShutdownRunner();
+            isHost = false;
+            ApplyRoleUI();
+        }
+    }
+
+    // 나머지 콜백들(사용하지 않으면 빈 구현)
+    public void OnConnectRequest(NetworkRunner r, NetworkRunnerCallbackArgs.ConnectRequest req, byte[] token) { }
+    public void OnConnectFailed(NetworkRunner r, NetAddress address, NetConnectFailedReason reason) { Debug.LogWarning("OnConnectFailed: " + reason); }
+    public void OnInput(NetworkRunner r, NetworkInput input) { }
+    public void OnInputMissing(NetworkRunner r, PlayerRef player, NetworkInput input) { }
+    public void OnShutdown(NetworkRunner r, ShutdownReason reason) { Debug.Log("Runner Shutdown: " + reason); }
+    public void OnHostMigration(NetworkRunner r, HostMigrationToken token) { Debug.Log("Host migration"); }
+    public void OnReliableDataReceived(NetworkRunner r, PlayerRef player, ReliableKey key, ArraySegment<byte> data) { }
+    public void OnReliableDataProgress(NetworkRunner r, PlayerRef p, ReliableKey key, float progress) { }
+    public void OnSceneLoadStart(NetworkRunner r) { }
+    public void OnSceneLoadDone(NetworkRunner r) { }
+    public void OnSessionListUpdated(NetworkRunner r, List<SessionInfo> sessionList) { }
+    public void OnCustomAuthenticationResponse(NetworkRunner r, Dictionary<string, object> data) { }
+    public void OnObjectEnterAOI(NetworkRunner r, NetworkObject obj, PlayerRef player) { }
+    public void OnObjectExitAOI(NetworkRunner r, NetworkObject obj, PlayerRef player) { }
+    public void OnUserSimulationMessage(NetworkRunner r, SimulationMessagePtr msg) { }
+
+#if UNITY_EDITOR
+    void OnValidate()
+    {
+        roomCodeLength = Mathf.Clamp(roomCodeLength, 4, 12);
+        if (maxPlayers < 1) maxPlayers = 1;
+    }
+#endif
+}
