@@ -126,6 +126,31 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         if (statusText != null) statusText.text = msg;
     }
 
+    // ===== 새로 추가: 접속 수 기반 상태 갱신 =====
+    void UpdateStatusWithCount(NetworkRunner r)
+    {
+        if (r == null)
+        {
+            SetStatus($"접속완료 0/{maxPlayers}");
+            return;
+        }
+
+        int count = 0;
+        try
+        {
+            count = r.ActivePlayers.Count();
+        }
+        catch
+        {
+            // 안전망: runner가 null이거나 카운트 접근 실패 시 fallback
+            if (runner != null)
+                count = runner.ActivePlayers.Count();
+        }
+
+        count = Mathf.Clamp(count, 0, maxPlayers);
+        SetStatus($"접속완료 {count}/{maxPlayers}");
+    }
+
     string GenerateRoomCode(int length)
     {
         const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -187,7 +212,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         for (int attempt = 0; attempt < maxTries; attempt++)
         {
             string code = GenerateRoomCode(roomCodeLength);
-            SetStatus($"방 생성 시도 {attempt + 1}/{maxTries} - 코드: {code}");
+            // 중간 "시도중" 메시지 생략(요청대로)
             Debug.Log($"방 생성 시도: {code}");
 
             var args = new StartGameArgs
@@ -206,8 +231,10 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
                 {
                     created = true;
                     if (roomCodeText != null) roomCodeText.text = code;
-                    SetStatus($"방 생성 완료 (코드: {code})");
                     Debug.Log($"방 생성 성공: {code}");
+
+                    // 생성 직후 상태 갱신 (호스트 자신 포함)
+                    UpdateStatusWithCount(runner);
                     break;
                 }
             }
@@ -259,9 +286,8 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         try
         {
             await runner.StartGame(args);
-            SetStatus("방 접속 시도 중...");
             Debug.Log($"Join StartGame 호출: {code}");
-            // Host에서 거부하면 OnDisconnectedFromServer가 호출됨
+            // 중간 메시지 생략(요청대로). 최종 상태는 OnConnectedToServer 콜백에서 처리.
         }
         catch (Exception e)
         {
@@ -280,6 +306,10 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     {
         int count = r.ActivePlayers.Count();
         Debug.Log($"[Host] 플레이어 접속 감지. 현재 인원: {count}");
+
+        // 접속자 수 갱신 (호스트 화면)
+        UpdateStatusWithCount(r);
+
         if (count > maxPlayers)
         {
             Debug.Log($"정원 초과: {count} > {maxPlayers}. 해당 플레이어 강제 퇴장시킵니다.");
@@ -290,6 +320,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     public void OnPlayerLeft(NetworkRunner r, PlayerRef player)
     {
         Debug.Log("[Host] 플레이어 퇴장 감지.");
+        UpdateStatusWithCount(r);
     }
 
     // **중요**: 클라이언트/호스트 전부에서 연결이 완전히 이루어진 시점
@@ -300,19 +331,18 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         // 강제로 panels 보이게 하고 UI 갱신
         EnsurePanelsVisible();
 
+        // 최종 연결이 확정된 시점에서 접속자 수로 상태 갱신
+        UpdateStatusWithCount(r);
+
         if (!isHost)
         {
-            // 클라이언트(게스트) 입장 완료 처리
-            ApplyRoleUI();                // GuestPanel 활성화
-            SetStatus("입장 완료");
             Debug.Log("클라이언트: 입장 완료, GuestPanel 활성화");
+            ApplyRoleUI();                // GuestPanel 활성화
         }
         else
         {
-            // 호스트는 이미 isHost=true 상태(생성 UI는 이미 보임)
-            ApplyRoleUI();
-            SetStatus("호스트: 세션 실행 중");
             Debug.Log("호스트: OnConnectedToServer - 세션 실행 중");
+            ApplyRoleUI();
         }
     }
 
