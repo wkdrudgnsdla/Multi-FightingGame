@@ -2813,7 +2813,7 @@ MonoBehaviour:
   GuestPanel: {fileID: 735499371}
   roomCodeLength: 8
   maxPlayers: 2
-  autoReturnToMainOnDisconnect: 1
+  ReturnToMainOnDisconnect: 1
   sceneToLoadOnExit: MainMenu
 --- !u!4 &1927795558
 Transform:

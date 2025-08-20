@@ -218,6 +218,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
                 SessionName = code,
                 Scene = sceneInfo,
                 SceneManager = sceneManagerComponent
+                // EnableHostMigration removed for compatibility with Fusion versions lacking that property
             };
 
             try
@@ -278,6 +279,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             GameMode = GameMode.Client,
             SessionName = code,
             SceneManager = sceneManagerComponent
+            // EnableHostMigration removed
         };
 
         try
@@ -330,16 +332,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         // 최종 연결이 확정된 시점에서 접속자 수로 상태 갱신
         UpdateStatusWithCount(r);
 
-        if (!isHost)
-        {
-            Debug.Log("클라이언트: 입장 완료, GuestPanel 활성화");
-            ApplyRoleUI();                // GuestPanel 활성화
-        }
-        else
-        {
-            Debug.Log("호스트: OnConnectedToServer - 세션 실행 중");
-            ApplyRoleUI();
-        }
+        ApplyRoleUI();
     }
 
     // 연결 끊김
@@ -347,24 +340,20 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     {
         Debug.Log($"OnDisconnectedFromServer 호출. 이유: {reason}");
 
-        if (!isHost)
+        // 호스트가 예고 없이 나가는 경우(크래시 등)에는 게스트가 자동으로 끊기지 않게 처리하려면
+        // 여기서 게스트 측의 동작을 제어할 수 있습니다. 기본적으로는 연결 끊김 처리와 씬 이동만 수행합니다.
+
+        SetStatus("연결 끊김");
+        _ = ShutdownRunner();
+
+        if (!isHost && ReturnToMainOnDisconnect && !isExiting)
         {
-            SetStatus("입장 실패: 방이 가득 차 있거나 호스트가 연결을 끊었습니다.");
-            Debug.Log("클라이언트: 입장 거부 또는 연결 끊김");
-
-            _ = ShutdownRunner();
-
-            // 자동으로 씬 이동할지 결정
-            if (ReturnToMainOnDisconnect && !isExiting)
-            {
-                StartCoroutine(LoadSceneOnDisconnectCoroutine());
-            }
+            StartCoroutine(LoadSceneOnDisconnectCoroutine());
         }
         else
         {
-            // 호스트가 자신의 세션을 종료한 경우
-            SetStatus("호스트 연결 종료.");
-            _ = ShutdownRunner();
+            // 호스트가 직접 ExitRoom을 눌러서 종료하는 시나리오는 ExitRoomCoroutine에서 이미 손님을 끊어주므로
+            // 여기서는 추가 동작을 하지 않습니다.
             isHost = false;
             ApplyRoleUI();
         }
@@ -398,19 +387,36 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         isExiting = true;
 
         // 1) 호스트이면 현재 접속된 모든 플레이어(게스트)를 강제로 Disconnect 시도
+        //    단, 로컬(호스트) 자신은 제외합니다.
+        bool didDisconnectPlayers = false;
         if (isHost && runner != null)
         {
             try
             {
-                // ActivePlayers를 복사해서 안전하게 순회
                 var players = runner.ActivePlayers.ToList();
-                Debug.Log($"[RoomManager] ExitRoom: 호스트가 {players.Count}명 강제 disconnect 시도");
+                Debug.Log($"[RoomManager] ExitRoom: 호스트가 {players.Count}명 강제 disconnect 시도 (로컬 제외)");
+
+                // 가능한 경우 로컬 플레이어를 가져와서 제외
+                PlayerRef local = default;
+                try
+                {
+                    local = runner.LocalPlayer;
+                }
+                catch
+                {
+                    local = default;
+                }
+
                 foreach (var p in players)
                 {
+                    // 로컬 본인인 경우 건너뜀
+                    if (p == local) continue;
+
                     try
                     {
                         runner.Disconnect(p);
                         Debug.Log($"[RoomManager] ExitRoom: Disconnect 호출 - PlayerRef {p}");
+                        didDisconnectPlayers = true;
                     }
                     catch (Exception e)
                     {
@@ -422,8 +428,15 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             {
                 Debug.LogWarning("[RoomManager] ExitRoom: 플레이어 강제 Disconnect 중 예외: " + ex.Message);
             }
+
+            // Disconnect 호출 후 클라이언트가 정리할 시간을 주기 위해 yield는 try/catch 바깥으로 뺐음
+            if (didDisconnectPlayers)
+            {
+                yield return new WaitForSeconds(0.25f);
+            }
         }
 
+        // 2) 로컬(호스트) runner 종료 및 씬 이동
         if (runner != null)
         {
             try
@@ -435,6 +448,9 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             {
                 Debug.LogWarning("[RoomManager] ExitRoom runner.Shutdown 예외: " + e.Message);
             }
+
+            try { Destroy(runner); } catch { }
+            runner = null;
         }
         else
         {
