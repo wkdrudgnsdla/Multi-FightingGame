@@ -235,7 +235,19 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 71640316}
   m_OnClick:
     m_PersistentCalls:
-      m_Calls: []
+      m_Calls:
+      - m_Target: {fileID: 1927795557}
+        m_TargetAssemblyTypeName: RoomManager, Assembly-CSharp
+        m_MethodName: ExitRoom
+        m_Mode: 1
+        m_Arguments:
+          m_ObjectArgument: {fileID: 0}
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
+          m_IntArgument: 0
+          m_FloatArgument: 0
+          m_StringArgument: 
+          m_BoolArgument: 0
+        m_CallState: 2
 --- !u!114 &71640316
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -290,7 +302,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &137675752
 Transform:
   m_ObjectHideFlags: 0
@@ -318,6 +330,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4fd4431855cef634882961ed0313d173, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  exitButton: {fileID: 0}
+  waitBeforeReload: 0.15
+  sceneNameToReload: 
 --- !u!1 &174683076
 GameObject:
   m_ObjectHideFlags: 0
@@ -962,7 +977,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!224 &734357915
 RectTransform:
   m_ObjectHideFlags: 0
@@ -1974,7 +1989,19 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 1372128087}
   m_OnClick:
     m_PersistentCalls:
-      m_Calls: []
+      m_Calls:
+      - m_Target: {fileID: 1927795557}
+        m_TargetAssemblyTypeName: RoomManager, Assembly-CSharp
+        m_MethodName: ExitRoom
+        m_Mode: 1
+        m_Arguments:
+          m_ObjectArgument: {fileID: 0}
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
+          m_IntArgument: 0
+          m_FloatArgument: 0
+          m_StringArgument: 
+          m_BoolArgument: 0
+        m_CallState: 2
 --- !u!114 &1372128087
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2786,6 +2813,8 @@ MonoBehaviour:
   GuestPanel: {fileID: 735499371}
   roomCodeLength: 8
   maxPlayers: 2
+  autoReturnToMainOnDisconnect: 1
+  sceneToLoadOnExit: MainMenu
 --- !u!4 &1927795558
 Transform:
   m_ObjectHideFlags: 0

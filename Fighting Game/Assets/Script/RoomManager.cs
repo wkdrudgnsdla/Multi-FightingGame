@@ -2,6 +2,7 @@ using System;
 using System.Text;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Collections;
 using System.Collections.Generic;
 using Fusion;
 using Fusion.Sockets;
@@ -19,7 +20,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     public Button joinBtn;
 
     [Header("패널")]
-    public GameObject panelsRoot; // Panels 루트 (다른 코드가 Start()에서 비활성화할 수 있음)
+    public GameObject panelsRoot; // Panels 루트
     public GameObject hostPanel;   // 호스트 전용 UI 패널
     public GameObject GuestPanel;  // 게스트 전용 UI 패널
 
@@ -27,44 +28,41 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     public int roomCodeLength = 8;
     public int maxPlayers = 2;
 
+    [Header("종료 동작 설정")]
+    public bool ReturnToMainOnDisconnect = true; // 게스트가 호스트 종료시 자동으로 씬 이동할지
+    public string sceneToLoadOnExit = ""; // 비어있으면 현재 씬을 다시 로드
+
     private NetworkRunner runner;
     private NetworkSceneManagerDefault sceneManagerComponent;
     private bool isHost = false; // 이 인스턴스가 Host인지 (로컬 플래그)
+    private bool isExiting = false; // 씬 전환 중복 방지
 
     void Awake()
     {
         if (createBtn != null) createBtn.onClick.AddListener(() => CreateRoomAsync());
         if (joinBtn != null) joinBtn.onClick.AddListener(() => JoinRoomAsync(joinInput != null ? joinInput.text.Trim() : ""));
 
-        AutoFindPanelsIfMissing();
+        FindPanels();
         ApplyRoleUI(); // 초기 UI 적용 (기본: guest view)
     }
 
-    // 자동 탐색: 비활성 오브젝트 포함해서 찾음
-    void AutoFindPanelsIfMissing()
+    void FindPanels()
     {
         if (panelsRoot == null)
         {
-            panelsRoot = FindGameObjectAnywhereByName("Panels")
-                      ?? FindGameObjectAnywhereByName("panels")
-                      ?? FindGameObjectAnywhereByName("PanelsRoot")
-                      ?? FindGameObjectAnywhereByName("panelsRoot");
+            panelsRoot = FindGameObjectAnywhereByName("Panels");
             if (panelsRoot != null) Debug.Log($"[RoomManager] panelsRoot 자동 할당: {panelsRoot.name}");
         }
 
         if (hostPanel == null)
         {
-            hostPanel = FindGameObjectAnywhereByName("hostPanel")
-                     ?? FindGameObjectAnywhereByName("HostPanel");
+            hostPanel = FindGameObjectAnywhereByName("HostPanel");
             if (hostPanel != null) Debug.Log($"[RoomManager] hostPanel 자동 할당: {hostPanel.name}");
         }
 
         if (GuestPanel == null)
         {
-            GuestPanel = FindGameObjectAnywhereByName("GuestPanel")
-                       ?? FindGameObjectAnywhereByName("guestPanel")
-                       ?? FindGameObjectAnywhereByName("ClientPanel")
-                       ?? FindGameObjectAnywhereByName("clientpanel");
+            GuestPanel = FindGameObjectAnywhereByName("GuestPanel");
             if (GuestPanel != null) Debug.Log($"[RoomManager] GuestPanel 자동 할당: {GuestPanel.name}");
         }
 
@@ -113,10 +111,8 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     void ApplyRoleUI()
     {
         Debug.Log($"ApplyRoleUI 호출: isHost={isHost}, panelsRoot_active={(panelsRoot != null ? panelsRoot.activeSelf.ToString() : "null")}");
-
         if (hostPanel != null) hostPanel.SetActive(isHost);
         if (GuestPanel != null) GuestPanel.SetActive(!isHost);
-
         if (roomCodeText != null) roomCodeText.gameObject.SetActive(isHost);
     }
 
@@ -126,7 +122,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         if (statusText != null) statusText.text = msg;
     }
 
-    // ===== 새로 추가: 접속 수 기반 상태 갱신 =====
+    // ===== 접속 수 기반 상태 갱신 =====
     void UpdateStatusWithCount(NetworkRunner r)
     {
         if (r == null)
@@ -142,7 +138,6 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
         catch
         {
-            // 안전망: runner가 null이거나 카운트 접근 실패 시 fallback
             if (runner != null)
                 count = runner.ActivePlayers.Count();
         }
@@ -160,15 +155,18 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         return sb.ToString();
     }
 
+    // 기존 비동기 정리 메서드 
     async Task ShutdownRunner()
     {
         try
         {
             if (runner != null)
             {
-                try { runner.Shutdown(false); } catch (Exception e) { Debug.LogWarning("Runner.Shutdown 예외: " + e.Message); }
+                try { runner.Shutdown(false); }
+                catch (Exception e) { Debug.LogWarning("Runner.Shutdown 예외: " + e.Message); }
+
                 await Task.Delay(100);
-                Destroy(runner);
+                try { Destroy(runner); } catch { }
                 runner = null;
                 Debug.Log("Runner 종료 및 정리 완료");
             }
@@ -212,7 +210,6 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         for (int attempt = 0; attempt < maxTries; attempt++)
         {
             string code = GenerateRoomCode(roomCodeLength);
-            // 중간 "시도중" 메시지 생략(요청대로)
             Debug.Log($"방 생성 시도: {code}");
 
             var args = new StartGameArgs
@@ -287,7 +284,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         {
             await runner.StartGame(args);
             Debug.Log($"Join StartGame 호출: {code}");
-            // 중간 메시지 생략(요청대로). 최종 상태는 OnConnectedToServer 콜백에서 처리.
+            // 최종 상태는 OnConnectedToServer 콜백에서 처리.
         }
         catch (Exception e)
         {
@@ -323,12 +320,11 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         UpdateStatusWithCount(r);
     }
 
-    // **중요**: 클라이언트/호스트 전부에서 연결이 완전히 이루어진 시점
+    // 클라이언트/호스트 전부에서 연결이 완전히 이루어진 시점
     public void OnConnectedToServer(NetworkRunner r)
     {
         Debug.Log("OnConnectedToServer 호출됨.");
 
-        // 강제로 panels 보이게 하고 UI 갱신
         EnsurePanelsVisible();
 
         // 최종 연결이 확정된 시점에서 접속자 수로 상태 갱신
@@ -346,7 +342,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
     }
 
-    // 연결 끊김(거부 포함)
+    // 연결 끊김
     public void OnDisconnectedFromServer(NetworkRunner r, NetDisconnectReason reason)
     {
         Debug.Log($"OnDisconnectedFromServer 호출. 이유: {reason}");
@@ -355,15 +351,104 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         {
             SetStatus("입장 실패: 방이 가득 차 있거나 호스트가 연결을 끊었습니다.");
             Debug.Log("클라이언트: 입장 거부 또는 연결 끊김");
+
             _ = ShutdownRunner();
+
+            // 자동으로 씬 이동할지 결정
+            if (ReturnToMainOnDisconnect && !isExiting)
+            {
+                StartCoroutine(LoadSceneOnDisconnectCoroutine());
+            }
         }
         else
         {
+            // 호스트가 자신의 세션을 종료한 경우
             SetStatus("호스트 연결 종료.");
             _ = ShutdownRunner();
             isHost = false;
             ApplyRoleUI();
         }
+    }
+
+    // 게스트가 자동으로 돌아갈 때 사용하는 코루틴
+    IEnumerator LoadSceneOnDisconnectCoroutine()
+    {
+        isExiting = true;
+        yield return new WaitForSeconds(0.15f);
+
+        string targetScene = string.IsNullOrEmpty(sceneToLoadOnExit)
+            ? SceneManager.GetActiveScene().name
+            : sceneToLoadOnExit;
+
+        Debug.Log("[RoomManager] 게스트 연결 끊김 -> 씬 이동: " + targetScene);
+        SceneManager.LoadScene(targetScene);
+    }
+
+    // ----------------------------
+    // ExitRoom: 버튼에서 호출하여 현재 세션을 안전하게 종료하고 씬 리로드
+    // ----------------------------
+    public void ExitRoom()
+    {
+        if (isExiting) return;
+        StartCoroutine(ExitRoomCoroutine());
+    }
+
+    private IEnumerator ExitRoomCoroutine()
+    {
+        isExiting = true;
+
+        // 1) 호스트이면 현재 접속된 모든 플레이어(게스트)를 강제로 Disconnect 시도
+        if (isHost && runner != null)
+        {
+            try
+            {
+                // ActivePlayers를 복사해서 안전하게 순회
+                var players = runner.ActivePlayers.ToList();
+                Debug.Log($"[RoomManager] ExitRoom: 호스트가 {players.Count}명 강제 disconnect 시도");
+                foreach (var p in players)
+                {
+                    try
+                    {
+                        runner.Disconnect(p);
+                        Debug.Log($"[RoomManager] ExitRoom: Disconnect 호출 - PlayerRef {p}");
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning("[RoomManager] ExitRoom Disconnect 예외: " + e.Message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[RoomManager] ExitRoom: 플레이어 강제 Disconnect 중 예외: " + ex.Message);
+            }
+        }
+
+        if (runner != null)
+        {
+            try
+            {
+                runner.Shutdown(false);
+                Debug.Log("[RoomManager] ExitRoom: runner.Shutdown 호출");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[RoomManager] ExitRoom runner.Shutdown 예외: " + e.Message);
+            }
+        }
+        else
+        {
+            Debug.Log("[RoomManager] ExitRoom: runner 없음");
+        }
+
+        yield return new WaitForSeconds(0.15f);
+
+        string targetScene = string.IsNullOrEmpty(sceneToLoadOnExit)
+            ? SceneManager.GetActiveScene().name
+            : sceneToLoadOnExit;
+
+        Debug.Log("[RoomManager] ExitRoom: 씬 이동 -> " + targetScene);
+        SceneManager.LoadScene(targetScene);
     }
 
     // 나머지 콜백들(사용하지 않으면 빈 구현)
