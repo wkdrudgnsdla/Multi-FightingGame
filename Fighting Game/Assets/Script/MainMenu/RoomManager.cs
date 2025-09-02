@@ -37,6 +37,8 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     private bool isHost = false; // 이 인스턴스가 Host인지 (로컬 플래그)
     private bool isExiting = false; // 씬 전환 중복 방지
 
+    public Alarm alarm;
+
     // --- Join 시도 추적 플래그 ---
     private bool joinAttemptInProgress = false;
     private bool joinAttemptSucceeded = false;
@@ -46,6 +48,8 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     {
         if (createBtn != null) createBtn.onClick.AddListener(() => CreateRoomAsync());
         if (joinBtn != null) joinBtn.onClick.AddListener(() => JoinRoomAsync(joinInput != null ? joinInput.text.Trim() : ""));
+
+        alarm = GameObject.Find("alarmUI").GetComponent<Alarm>();
 
         FindPanels();
         ApplyRoleUI(); // 초기 UI 적용 (기본: guest view)
@@ -386,6 +390,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         string targetScene = string.IsNullOrEmpty(sceneToLoadOnExit) ? SceneManager.GetActiveScene().name : sceneToLoadOnExit;
         Debug.Log("[RoomManager] 씬 재로딩: " + targetScene);
         SceneManager.LoadScene(targetScene);
+        alarm.StartCoroutine(alarm.WriteError("Wrong Room Code!"));
     }
 
     // ============================
