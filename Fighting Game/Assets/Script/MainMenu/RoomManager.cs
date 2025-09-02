@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using System.Text;
 using System.Linq;
 using System.Threading.Tasks;
@@ -12,30 +12,35 @@ using UnityEngine.UI;
 
 public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
 {
-    [Header("UI ¿¬°á")]
+    [Header("UI ì—°ê²°")]
     public Text statusText;
     public Text roomCodeText;
     public InputField joinInput;
     public Button createBtn;
     public Button joinBtn;
 
-    [Header("ÆĞ³Î")]
-    public GameObject panelsRoot; // Panels ·çÆ®
-    public GameObject hostPanel;   // È£½ºÆ® Àü¿ë UI ÆĞ³Î
-    public GameObject GuestPanel;  // °Ô½ºÆ® Àü¿ë UI ÆĞ³Î
+    [Header("íŒ¨ë„")]
+    public GameObject panelsRoot; // Panels ë£¨íŠ¸
+    public GameObject hostPanel;   // í˜¸ìŠ¤íŠ¸ ì „ìš© UI íŒ¨ë„
+    public GameObject GuestPanel;  // ê²ŒìŠ¤íŠ¸ ì „ìš© UI íŒ¨ë„
 
-    [Header("¼³Á¤")]
+    [Header("ì„¤ì •")]
     public int roomCodeLength = 8;
     public int maxPlayers = 2;
 
-    [Header("Á¾·á µ¿ÀÛ ¼³Á¤")]
-    public bool ReturnToMainOnDisconnect = true; // °Ô½ºÆ®°¡ È£½ºÆ® Á¾·á½Ã ÀÚµ¿À¸·Î ¾À ÀÌµ¿ÇÒÁö
-    public string sceneToLoadOnExit = ""; // ºñ¾îÀÖÀ¸¸é ÇöÀç ¾ÀÀ» ´Ù½Ã ·Îµå
+    [Header("ì¢…ë£Œ ë™ì‘ ì„¤ì •")]
+    public bool ReturnToMainOnDisconnect = true; // ê²ŒìŠ¤íŠ¸ê°€ í˜¸ìŠ¤íŠ¸ ì¢…ë£Œì‹œ ìë™ìœ¼ë¡œ ì”¬ ì´ë™í• ì§€
+    public string sceneToLoadOnExit = ""; // ë¹„ì–´ìˆìœ¼ë©´ í˜„ì¬ ì”¬ì„ ë‹¤ì‹œ ë¡œë“œ
 
     private NetworkRunner runner;
     private NetworkSceneManagerDefault sceneManagerComponent;
-    private bool isHost = false; // ÀÌ ÀÎ½ºÅÏ½º°¡ HostÀÎÁö (·ÎÄÃ ÇÃ·¡±×)
-    private bool isExiting = false; // ¾À ÀüÈ¯ Áßº¹ ¹æÁö
+    private bool isHost = false; // ì´ ì¸ìŠ¤í„´ìŠ¤ê°€ Hostì¸ì§€ (ë¡œì»¬ í”Œë˜ê·¸)
+    private bool isExiting = false; // ì”¬ ì „í™˜ ì¤‘ë³µ ë°©ì§€
+
+    // --- Join ì‹œë„ ì¶”ì  í”Œë˜ê·¸ ---
+    private bool joinAttemptInProgress = false;
+    private bool joinAttemptSucceeded = false;
+    private NetworkRunner joinAttemptRunner = null;
 
     void Awake()
     {
@@ -43,7 +48,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         if (joinBtn != null) joinBtn.onClick.AddListener(() => JoinRoomAsync(joinInput != null ? joinInput.text.Trim() : ""));
 
         FindPanels();
-        ApplyRoleUI(); // ÃÊ±â UI Àû¿ë (±âº»: guest view)
+        ApplyRoleUI(); // ì´ˆê¸° UI ì ìš© (ê¸°ë³¸: guest view)
     }
 
     void FindPanels()
@@ -51,27 +56,27 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         if (panelsRoot == null)
         {
             panelsRoot = FindGameObjectAnywhereByName("Panels");
-            if (panelsRoot != null) Debug.Log($"[RoomManager] panelsRoot ÀÚµ¿ ÇÒ´ç: {panelsRoot.name}");
+            if (panelsRoot != null) Debug.Log($"[RoomManager] panelsRoot ìë™ í• ë‹¹: {panelsRoot.name}");
         }
 
         if (hostPanel == null)
         {
             hostPanel = FindGameObjectAnywhereByName("HostPanel");
-            if (hostPanel != null) Debug.Log($"[RoomManager] hostPanel ÀÚµ¿ ÇÒ´ç: {hostPanel.name}");
+            if (hostPanel != null) Debug.Log($"[RoomManager] hostPanel ìë™ í• ë‹¹: {hostPanel.name}");
         }
 
         if (GuestPanel == null)
         {
             GuestPanel = FindGameObjectAnywhereByName("GuestPanel");
-            if (GuestPanel != null) Debug.Log($"[RoomManager] GuestPanel ÀÚµ¿ ÇÒ´ç: {GuestPanel.name}");
+            if (GuestPanel != null) Debug.Log($"[RoomManager] GuestPanel ìë™ í• ë‹¹: {GuestPanel.name}");
         }
 
         if (panelsRoot == null)
-            Debug.LogWarning("[RoomManager] panelsRoot°¡ ÀÚµ¿À¸·Î ÇÒ´çµÇÁö ¾Ê¾Ò½À´Ï´Ù. Inspector¿¡ Panels ·çÆ®¸¦ ÇÒ´çÇÏ¼¼¿ä.");
+            Debug.LogWarning("[RoomManager] panelsRootê°€ ìë™ìœ¼ë¡œ í• ë‹¹ë˜ì§€ ì•Šì•˜ìŠµë‹ˆë‹¤. Inspectorì— Panels ë£¨íŠ¸ë¥¼ í• ë‹¹í•˜ì„¸ìš”.");
         if (hostPanel == null)
-            Debug.LogWarning("[RoomManager] hostPanelÀÌ ÀÚµ¿À¸·Î ÇÒ´çµÇÁö ¾Ê¾Ò½À´Ï´Ù. Inspector¿¡ HostPanelÀ» ¿¬°áÇÏ¼¼¿ä.");
+            Debug.LogWarning("[RoomManager] hostPanelì´ ìë™ìœ¼ë¡œ í• ë‹¹ë˜ì§€ ì•Šì•˜ìŠµë‹ˆë‹¤. Inspectorì— HostPanelì„ ì—°ê²°í•˜ì„¸ìš”.");
         if (GuestPanel == null)
-            Debug.LogWarning("[RoomManager] GuestPanelÀÌ ÀÚµ¿À¸·Î ÇÒ´çµÇÁö ¾Ê¾Ò½À´Ï´Ù. Inspector¿¡ GuestPanelÀ» ¿¬°áÇÏ¼¼¿ä.");
+            Debug.LogWarning("[RoomManager] GuestPanelì´ ìë™ìœ¼ë¡œ í• ë‹¹ë˜ì§€ ì•Šì•˜ìŠµë‹ˆë‹¤. Inspectorì— GuestPanelì„ ì—°ê²°í•˜ì„¸ìš”.");
     }
 
     GameObject FindGameObjectAnywhereByName(string name)
@@ -88,32 +93,36 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
         catch (Exception e)
         {
-            Debug.LogWarning("[RoomManager] FindGameObjectAnywhereByName ½ÇÆĞ: " + e.Message);
+            Debug.LogWarning("[RoomManager] FindGameObjectAnywhereByName ì‹¤íŒ¨: " + e.Message);
         }
         return null;
     }
 
-    // Panels ·çÆ®°¡ ºñÈ°¼º »óÅÂ¿©µµ °­Á¦ È°¼ºÈ­
+    // Panels ë£¨íŠ¸ê°€ ë¹„í™œì„± ìƒíƒœì—¬ë„ ê°•ì œ í™œì„±í™”
     void EnsurePanelsVisible()
     {
         if (panelsRoot != null && !panelsRoot.activeSelf)
         {
             panelsRoot.SetActive(true);
-            Debug.Log("[RoomManager] panelsRoot °­Á¦ È°¼ºÈ­");
+            Debug.Log("[RoomManager] panelsRoot ê°•ì œ í™œì„±í™”");
         }
         else if (panelsRoot == null)
         {
-            Debug.LogWarning("[RoomManager] EnsurePanelsVisible: panelsRoot°¡ ÇÒ´çµÇ¾î ÀÖÁö ¾Ê½À´Ï´Ù. Inspector¿¡ ÇÒ´çÇÏ°Å³ª ¿ÀºêÁ§Æ® ÀÌ¸§À» È®ÀÎÇÏ¼¼¿ä.");
+            Debug.LogWarning("[RoomManager] EnsurePanelsVisible: panelsRootê°€ í• ë‹¹ë˜ì–´ ìˆì§€ ì•ŠìŠµë‹ˆë‹¤. Inspectorì— í• ë‹¹í•˜ê±°ë‚˜ ì˜¤ë¸Œì íŠ¸ ì´ë¦„ì„ í™•ì¸í•˜ì„¸ìš”.");
         }
     }
 
-    // UI Åä±Û ¹× µğ¹ö±× ·Î±× Ãß°¡
+    // UI í† ê¸€ ë° ë””ë²„ê·¸ ë¡œê·¸ ì¶”ê°€
     void ApplyRoleUI()
     {
-        Debug.Log($"ApplyRoleUI È£Ãâ: isHost={isHost}, panelsRoot_active={(panelsRoot != null ? panelsRoot.activeSelf.ToString() : "null")}");
+        Debug.Log($"ApplyRoleUI í˜¸ì¶œ: isHost={isHost}, panelsRoot_active={(panelsRoot != null ? panelsRoot.activeSelf.ToString() : "null")}");
         if (hostPanel != null) hostPanel.SetActive(isHost);
         if (GuestPanel != null) GuestPanel.SetActive(!isHost);
         if (roomCodeText != null) roomCodeText.gameObject.SetActive(isHost);
+
+        // ê²ŒìŠ¤íŠ¸ ë·°ì¼ ë•ŒëŠ” joinBtn í™œì„± ë³´ì¥
+        if (!isHost && joinBtn != null) joinBtn.interactable = true;
+        if (createBtn != null) createBtn.interactable = true;
     }
 
     void SetStatus(string msg)
@@ -122,7 +131,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         if (statusText != null) statusText.text = msg;
     }
 
-    // ===== Á¢¼Ó ¼ö ±â¹İ »óÅÂ °»½Å =====
+    // ===== ì ‘ì† ìˆ˜ ê¸°ë°˜ ìƒíƒœ ê°±ì‹  =====
     void UpdateStatusWithCount(NetworkRunner r)
     {
         if (r == null)
@@ -155,7 +164,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         return sb.ToString();
     }
 
-    // ±âÁ¸ ºñµ¿±â Á¤¸® ¸Ş¼­µå 
+    // ê¸°ì¡´ ë¹„ë™ê¸° ì •ë¦¬ ë©”ì„œë“œ 
     async Task ShutdownRunner()
     {
         try
@@ -163,18 +172,18 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             if (runner != null)
             {
                 try { runner.Shutdown(false); }
-                catch (Exception e) { Debug.LogWarning("Runner.Shutdown ¿¹¿Ü: " + e.Message); }
+                catch (Exception e) { Debug.LogWarning("Runner.Shutdown ì˜ˆì™¸: " + e.Message); }
 
                 await Task.Delay(100);
                 try { Destroy(runner); } catch { }
                 runner = null;
-                Debug.Log("Runner Á¾·á ¹× Á¤¸® ¿Ï·á");
+                Debug.Log("Runner ì¢…ë£Œ ë° ì •ë¦¬ ì™„ë£Œ");
             }
         }
-        catch (Exception ex) { Debug.LogWarning("ShutdownRunner ¿¹¿Ü: " + ex.Message); }
+        catch (Exception ex) { Debug.LogWarning("ShutdownRunner ì˜ˆì™¸: " + ex.Message); }
     }
 
-    // Host »ı¼º: panels °­Á¦ È°¼ºÈ­ ÈÄ UI ÀüÈ¯
+    // Host ìƒì„±: panels ê°•ì œ í™œì„±í™” í›„ UI ì „í™˜
     public async void CreateRoomAsync()
     {
         EnsurePanelsVisible();
@@ -187,8 +196,8 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         int buildIndex = SceneManager.GetActiveScene().buildIndex;
         if (buildIndex < 0)
         {
-            SetStatus("¿À·ù: ÇöÀç ¾ÀÀÌ Build Settings¿¡ µî·ÏµÇ¾î ÀÖÁö ¾Ê½À´Ï´Ù.");
-            Debug.LogWarning("Build Settings¿¡ ÇöÀç ¾ÀÀ» Ãß°¡ÇÏ¼¼¿ä (File > Build Settings > Add Open Scenes).");
+            SetStatus("ì˜¤ë¥˜: í˜„ì¬ ì”¬ì´ Build Settingsì— ë“±ë¡ë˜ì–´ ìˆì§€ ì•ŠìŠµë‹ˆë‹¤.");
+            Debug.LogWarning("Build Settingsì— í˜„ì¬ ì”¬ì„ ì¶”ê°€í•˜ì„¸ìš” (File > Build Settings > Add Open Scenes).");
             isHost = false;
             ApplyRoleUI();
             return;
@@ -210,7 +219,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         for (int attempt = 0; attempt < maxTries; attempt++)
         {
             string code = GenerateRoomCode(roomCodeLength);
-            Debug.Log($"¹æ »ı¼º ½Ãµµ: {code}");
+            Debug.Log($"ë°© ìƒì„± ì‹œë„: {code}");
 
             var args = new StartGameArgs
             {
@@ -218,7 +227,6 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
                 SessionName = code,
                 Scene = sceneInfo,
                 SceneManager = sceneManagerComponent
-                // EnableHostMigration removed for compatibility with Fusion versions lacking that property
             };
 
             try
@@ -229,16 +237,16 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
                 {
                     created = true;
                     if (roomCodeText != null) roomCodeText.text = code;
-                    Debug.Log($"¹æ »ı¼º ¼º°ø: {code}");
+                    Debug.Log($"ë°© ìƒì„± ì„±ê³µ: {code}");
 
-                    // »ı¼º Á÷ÈÄ »óÅÂ °»½Å (È£½ºÆ® ÀÚ½Å Æ÷ÇÔ)
+                    // ìƒì„± ì§í›„ ìƒíƒœ ê°±ì‹  (í˜¸ìŠ¤íŠ¸ ìì‹  í¬í•¨)
                     UpdateStatusWithCount(runner);
                     break;
                 }
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"StartGame ½ÇÆĞ: {e.Message}");
+                Debug.LogWarning($"StartGame ì‹¤íŒ¨: {e.Message}");
             }
 
             if (runner != null) { Destroy(runner); runner = null; }
@@ -247,29 +255,49 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
 
         if (!created)
         {
-            SetStatus("¹æ »ı¼º ½ÇÆĞ (Áßº¹ ¹®Á¦ ÇØ°á ºÒ°¡)");
-            Debug.LogWarning("¹æ »ı¼º¿¡ ½ÇÆĞÇß½À´Ï´Ù.");
+            SetStatus("ë°© ìƒì„± ì‹¤íŒ¨ (ì¤‘ë³µ ë¬¸ì œ í•´ê²° ë¶ˆê°€)");
+            Debug.LogWarning("ë°© ìƒì„±ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤.");
             isHost = false;
             ApplyRoleUI();
             if (runner != null) { await ShutdownRunner(); }
         }
     }
 
-    // Guest: Á¢¼Ó ½Ãµµ (ÃÖÁ¾ UI °»½ÅÀº OnConnectedToServer¿¡¼­ Ã³¸®)
+    // Guest: ì ‘ì† ì‹œë„ (ìµœì¢… UI ê°±ì‹ ì€ OnConnectedToServerì—ì„œ ì²˜ë¦¬)
+    // ë°©ì´ ì¡´ì¬í•˜ì§€ ì•Šì•„ì„œ ì…ì¥ ì‹¤íŒ¨í•˜ë©´ ì”¬ì„ ë‹¤ì‹œ ë¡œë“œí•˜ë„ë¡ êµ¬í˜„
     public async void JoinRoomAsync(string code)
     {
         code = (code ?? "").Trim();
         if (string.IsNullOrEmpty(code))
         {
-            SetStatus("ÀÔÀåÇÒ ¹æ ÄÚµå¸¦ ÀÔ·ÂÇÏ¼¼¿ä.");
+            SetStatus("ì…ì¥í•  ë°© ì½”ë“œë¥¼ ì…ë ¥í•˜ì„¸ìš”.");
             return;
         }
+
+        // ì¤€ë¹„: í”Œë˜ê·¸, UI
+        joinAttemptInProgress = true;
+        joinAttemptSucceeded = false;
+        joinAttemptRunner = null;
 
         isHost = false;
         ApplyRoleUI();
 
-        if (runner != null) await ShutdownRunner();
+        // ê¸°ì¡´ runner ì •ë¦¬
+        if (runner != null)
+            await ShutdownRunner();
 
+        // sceneManagerComponent ë³´ì¥
+        if (sceneManagerComponent == null)
+        {
+            sceneManagerComponent = gameObject.GetComponent<NetworkSceneManagerDefault>();
+            if (sceneManagerComponent == null)
+            {
+                sceneManagerComponent = gameObject.AddComponent<NetworkSceneManagerDefault>();
+                Debug.Log("[RoomManager] sceneManagerComponentê°€ ì—†ì–´ ìë™ ì¶”ê°€í•¨.");
+            }
+        }
+
+        // Runner ìƒì„±
         runner = gameObject.AddComponent<NetworkRunner>();
         runner.ProvideInput = true;
         runner.AddCallbacks(this);
@@ -279,71 +307,149 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             GameMode = GameMode.Client,
             SessionName = code,
             SceneManager = sceneManagerComponent
-            // EnableHostMigration removed
         };
+
+        // join ì¶”ì  ëŒ€ìƒ ì„¤ì •
+        joinAttemptRunner = runner;
+
+        SetStatus("ë°© ì ‘ì† ì‹œë„...");
 
         try
         {
             await runner.StartGame(args);
-            Debug.Log($"Join StartGame È£Ãâ: {code}");
-            // ÃÖÁ¾ »óÅÂ´Â OnConnectedToServer Äİ¹é¿¡¼­ Ã³¸®.
+            Debug.Log($"Join StartGame í˜¸ì¶œ: {code}");
         }
         catch (Exception e)
         {
-            SetStatus($"ÀÔÀå ½ÇÆĞ: {e.Message}");
-            Debug.LogWarning($"Join StartGame ¿¹¿Ü: {e.Message}");
-            if (runner != null) { Destroy(runner); runner = null; }
+            Debug.LogWarning($"Join StartGame ì˜ˆì™¸: {e.Message}");
+            // Start ì‹¤íŒ¨í•˜ë©´ ì”¬ ë¦¬ë¡œë“œ
+            await SafeCleanupAndReloadScene("ì…ì¥ ì‹¤íŒ¨: StartGame ì˜ˆì™¸");
+            return;
         }
+
+        // StartGame í˜¸ì¶œ í›„ ì½œë°±ì„ ê¸°ë‹¤ë¦¼ (íƒ€ì„ì•„ì›ƒ)
+        int checks = 60; // 60 * 100ms = 6s
+        int delayMs = 100;
+        for (int i = 0; i < checks; i++)
+        {
+            if (!joinAttemptInProgress) break; // OnConnectedToServer ë˜ëŠ” OnDisconnectedFromServerì—ì„œ ë³€ê²½ë¨
+            await Task.Delay(delayMs);
+        }
+
+        if (joinAttemptSucceeded)
+        {
+            Debug.Log("[RoomManager] Join ì„±ê³µ (ì½œë°± í™•ì¸).");
+            // ì„±ê³µ ì²˜ë¦¬ëŠ” OnConnectedToServerì—ì„œ ì´ë¯¸ í•¨.
+            joinAttemptInProgress = false;
+            joinAttemptRunner = null;
+            return;
+        }
+        else
+        {
+            Debug.LogWarning("[RoomManager] Join ì‹¤íŒ¨(íƒ€ì„ì•„ì›ƒ ë˜ëŠ” ê±°ë¶€). ì”¬ì„ ë‹¤ì‹œ ë¡œë“œí•©ë‹ˆë‹¤.");
+            await SafeCleanupAndReloadScene("ì…ì¥ ì‹¤íŒ¨: ë°©ì´ ì—†ê±°ë‚˜ ì‘ë‹µ ì—†ìŒ (íƒ€ì„ì•„ì›ƒ)");
+            return;
+        }
+    }
+
+    async Task SafeCleanupAndReloadScene(string statusMsg)
+    {
+        try
+        {
+            SetStatus(statusMsg);
+        }
+        catch { }
+
+        // ì•ˆì „ ì •ë¦¬
+        try
+        {
+            if (runner != null)
+            {
+                try { runner.Shutdown(false); } catch { }
+                await Task.Delay(100);
+                try { Destroy(runner); } catch { }
+                runner = null;
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("SafeCleanup ì˜ˆì™¸: " + e.Message);
+            runner = null;
+        }
+
+        // í”Œë˜ê·¸ ì´ˆê¸°í™”
+        joinAttemptInProgress = false;
+        joinAttemptSucceeded = false;
+        joinAttemptRunner = null;
+
+        await Task.Delay(150);
+        string targetScene = string.IsNullOrEmpty(sceneToLoadOnExit) ? SceneManager.GetActiveScene().name : sceneToLoadOnExit;
+        Debug.Log("[RoomManager] ì”¬ ì¬ë¡œë”©: " + targetScene);
+        SceneManager.LoadScene(targetScene);
     }
 
     // ============================
     // INetworkRunnerCallbacks
     // ============================
-
-    // Host: »õ ÇÃ·¹ÀÌ¾î Á¢¼Ó °¨Áö -> Á¤¿ø ÃÊ°ú¸é °­Á¦ ÅğÀå
     public void OnPlayerJoined(NetworkRunner r, PlayerRef player)
     {
         int count = r.ActivePlayers.Count();
-        Debug.Log($"[Host] ÇÃ·¹ÀÌ¾î Á¢¼Ó °¨Áö. ÇöÀç ÀÎ¿ø: {count}");
+        Debug.Log($"[Host] í”Œë ˆì´ì–´ ì ‘ì† ê°ì§€. í˜„ì¬ ì¸ì›: {count}");
 
-        // Á¢¼ÓÀÚ ¼ö °»½Å (È£½ºÆ® È­¸é)
+        // ì ‘ì†ì ìˆ˜ ê°±ì‹  (í˜¸ìŠ¤íŠ¸ í™”ë©´)
         UpdateStatusWithCount(r);
 
         if (count > maxPlayers)
         {
-            Debug.Log($"Á¤¿ø ÃÊ°ú: {count} > {maxPlayers}. ÇØ´ç ÇÃ·¹ÀÌ¾î °­Á¦ ÅğÀå½ÃÅµ´Ï´Ù.");
-            r.Disconnect(player);
+            Debug.Log($"ì •ì› ì´ˆê³¼: {count} > {maxPlayers}. í•´ë‹¹ í”Œë ˆì´ì–´ ê°•ì œ í‡´ì¥ì‹œí‚µë‹ˆë‹¤.");
+            try { r.Disconnect(player); } catch (Exception e) { Debug.LogWarning("Disconnect ì˜ˆì™¸: " + e.Message); }
         }
     }
 
     public void OnPlayerLeft(NetworkRunner r, PlayerRef player)
     {
-        Debug.Log("[Host] ÇÃ·¹ÀÌ¾î ÅğÀå °¨Áö.");
+        Debug.Log("[Host] í”Œë ˆì´ì–´ í‡´ì¥ ê°ì§€.");
         UpdateStatusWithCount(r);
     }
 
-    // Å¬¶óÀÌ¾ğÆ®/È£½ºÆ® ÀüºÎ¿¡¼­ ¿¬°áÀÌ ¿ÏÀüÈ÷ ÀÌ·ç¾îÁø ½ÃÁ¡
+    // í´ë¼ì´ì–¸íŠ¸/í˜¸ìŠ¤íŠ¸ ì „ë¶€ì—ì„œ ì—°ê²°ì´ ì™„ì „íˆ ì´ë£¨ì–´ì§„ ì‹œì 
     public void OnConnectedToServer(NetworkRunner r)
     {
-        Debug.Log("OnConnectedToServer È£ÃâµÊ.");
+        Debug.Log("OnConnectedToServer í˜¸ì¶œë¨.");
 
         EnsurePanelsVisible();
 
-        // ÃÖÁ¾ ¿¬°áÀÌ È®Á¤µÈ ½ÃÁ¡¿¡¼­ Á¢¼ÓÀÚ ¼ö·Î »óÅÂ °»½Å
+        // ìµœì¢… ì—°ê²°ì´ í™•ì •ëœ ì‹œì ì—ì„œ ì ‘ì†ì ìˆ˜ë¡œ ìƒíƒœ ê°±ì‹ 
         UpdateStatusWithCount(r);
 
         ApplyRoleUI();
+
+        // join ì‹œë„ ì¤‘ì´ë©´ ì„±ê³µ ì²˜ë¦¬
+        if (joinAttemptInProgress && joinAttemptRunner == r)
+        {
+            joinAttemptSucceeded = true;
+            joinAttemptInProgress = false;
+            joinAttemptRunner = null;
+            Debug.Log("[RoomManager] joinAttemptSucceeded set true (OnConnectedToServer)");
+        }
     }
 
-    // ¿¬°á ²÷±è
+    // ì—°ê²° ëŠê¹€
     public void OnDisconnectedFromServer(NetworkRunner r, NetDisconnectReason reason)
     {
-        Debug.Log($"OnDisconnectedFromServer È£Ãâ. ÀÌÀ¯: {reason}");
+        Debug.Log($"OnDisconnectedFromServer í˜¸ì¶œ. ì´ìœ : {reason}");
 
-        // È£½ºÆ®°¡ ¿¹°í ¾øÀÌ ³ª°¡´Â °æ¿ì(Å©·¡½Ã µî)¿¡´Â °Ô½ºÆ®°¡ ÀÚµ¿À¸·Î ²÷±âÁö ¾Ê°Ô Ã³¸®ÇÏ·Á¸é
-        // ¿©±â¼­ °Ô½ºÆ® ÃøÀÇ µ¿ÀÛÀ» Á¦¾îÇÒ ¼ö ÀÖ½À´Ï´Ù. ±âº»ÀûÀ¸·Î´Â ¿¬°á ²÷±è Ã³¸®¿Í ¾À ÀÌµ¿¸¸ ¼öÇàÇÕ´Ï´Ù.
+        // ë§Œì•½ ì…ì¥ ì‹œë„ ì¤‘ì— ëŠê¸´ ê±°ë¼ë©´(= ë°© ì—†ìŒ ë˜ëŠ” ê±°ë¶€) ì”¬ì„ ë‹¤ì‹œ ë¡œë“œ
+        if (joinAttemptInProgress && joinAttemptRunner == r && !isHost)
+        {
+            Debug.Log("[RoomManager] ì…ì¥ ì‹œë„ ì¤‘ ì—°ê²° ëŠê¹€ ê°ì§€ -> ì”¬ ì¬ë¡œë”© ì²˜ë¦¬");
+            // ì•ˆì „ ì •ë¦¬ ë° ì”¬ ì´ë™ (ì½”ë£¨í‹´/ë¹„ë™ê¸°ë¡œ ì²˜ë¦¬)
+            _ = SafeCleanupAndReloadScene("ì…ì¥ ì‹¤íŒ¨: ë°©ì´ ì¡´ì¬í•˜ì§€ ì•Šê±°ë‚˜ ê±°ë¶€ë˜ì—ˆìŠµë‹ˆë‹¤.");
+            return;
+        }
 
-        SetStatus("¿¬°á ²÷±è");
+        // ì¼ë°˜ì ì¸ ì—°ê²° ëŠê¹€ ì²˜ë¦¬
+        SetStatus("ì—°ê²° ëŠê¹€");
         _ = ShutdownRunner();
 
         if (!isHost && ReturnToMainOnDisconnect && !isExiting)
@@ -352,14 +458,12 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
         else
         {
-            // È£½ºÆ®°¡ Á÷Á¢ ExitRoomÀ» ´­·¯¼­ Á¾·áÇÏ´Â ½Ã³ª¸®¿À´Â ExitRoomCoroutine¿¡¼­ ÀÌ¹Ì ¼Õ´ÔÀ» ²÷¾îÁÖ¹Ç·Î
-            // ¿©±â¼­´Â Ãß°¡ µ¿ÀÛÀ» ÇÏÁö ¾Ê½À´Ï´Ù.
             isHost = false;
             ApplyRoleUI();
         }
     }
 
-    // °Ô½ºÆ®°¡ ÀÚµ¿À¸·Î µ¹¾Æ°¥ ¶§ »ç¿ëÇÏ´Â ÄÚ·çÆ¾
+    // ê²ŒìŠ¤íŠ¸ê°€ ìë™ìœ¼ë¡œ ëŒì•„ê°ˆ ë•Œ ì‚¬ìš©í•˜ëŠ” ì½”ë£¨í‹´
     IEnumerator LoadSceneOnDisconnectCoroutine()
     {
         isExiting = true;
@@ -369,12 +473,12 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             ? SceneManager.GetActiveScene().name
             : sceneToLoadOnExit;
 
-        Debug.Log("[RoomManager] °Ô½ºÆ® ¿¬°á ²÷±è -> ¾À ÀÌµ¿: " + targetScene);
+        Debug.Log("[RoomManager] ê²ŒìŠ¤íŠ¸ ì—°ê²° ëŠê¹€ -> ì”¬ ì´ë™: " + targetScene);
         SceneManager.LoadScene(targetScene);
     }
 
     // ----------------------------
-    // ExitRoom: ¹öÆ°¿¡¼­ È£ÃâÇÏ¿© ÇöÀç ¼¼¼ÇÀ» ¾ÈÀüÇÏ°Ô Á¾·áÇÏ°í ¾À ¸®·Îµå
+    // ExitRoom: ë²„íŠ¼ì—ì„œ í˜¸ì¶œí•˜ì—¬ í˜„ì¬ ì„¸ì…˜ì„ ì•ˆì „í•˜ê²Œ ì¢…ë£Œí•˜ê³  ì”¬ ë¦¬ë¡œë“œ
     // ----------------------------
     public void ExitRoom()
     {
@@ -386,17 +490,14 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     {
         isExiting = true;
 
-        // 1) È£½ºÆ®ÀÌ¸é ÇöÀç Á¢¼ÓµÈ ¸ğµç ÇÃ·¹ÀÌ¾î(°Ô½ºÆ®)¸¦ °­Á¦·Î Disconnect ½Ãµµ
-        //    ´Ü, ·ÎÄÃ(È£½ºÆ®) ÀÚ½ÅÀº Á¦¿ÜÇÕ´Ï´Ù.
         bool didDisconnectPlayers = false;
         if (isHost && runner != null)
         {
             try
             {
                 var players = runner.ActivePlayers.ToList();
-                Debug.Log($"[RoomManager] ExitRoom: È£½ºÆ®°¡ {players.Count}¸í °­Á¦ disconnect ½Ãµµ (·ÎÄÃ Á¦¿Ü)");
+                Debug.Log($"[RoomManager] ExitRoom: í˜¸ìŠ¤íŠ¸ê°€ {players.Count}ëª… ê°•ì œ disconnect ì‹œë„ (ë¡œì»¬ ì œì™¸)");
 
-                // °¡´ÉÇÑ °æ¿ì ·ÎÄÃ ÇÃ·¹ÀÌ¾î¸¦ °¡Á®¿Í¼­ Á¦¿Ü
                 PlayerRef local = default;
                 try
                 {
@@ -409,44 +510,42 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
 
                 foreach (var p in players)
                 {
-                    // ·ÎÄÃ º»ÀÎÀÎ °æ¿ì °Ç³Ê¶Ü
                     if (p == local) continue;
 
                     try
                     {
                         runner.Disconnect(p);
-                        Debug.Log($"[RoomManager] ExitRoom: Disconnect È£Ãâ - PlayerRef {p}");
+                        Debug.Log($"[RoomManager] ExitRoom: Disconnect í˜¸ì¶œ - PlayerRef {p}");
                         didDisconnectPlayers = true;
                     }
                     catch (Exception e)
                     {
-                        Debug.LogWarning("[RoomManager] ExitRoom Disconnect ¿¹¿Ü: " + e.Message);
+                        Debug.LogWarning("[RoomManager] ExitRoom Disconnect ì˜ˆì™¸: " + e.Message);
                     }
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogWarning("[RoomManager] ExitRoom: ÇÃ·¹ÀÌ¾î °­Á¦ Disconnect Áß ¿¹¿Ü: " + ex.Message);
+                Debug.LogWarning("[RoomManager] ExitRoom: í”Œë ˆì´ì–´ ê°•ì œ Disconnect ì¤‘ ì˜ˆì™¸: " + ex.Message);
             }
 
-            // Disconnect È£Ãâ ÈÄ Å¬¶óÀÌ¾ğÆ®°¡ Á¤¸®ÇÒ ½Ã°£À» ÁÖ±â À§ÇØ yield´Â try/catch ¹Ù±ùÀ¸·Î »°À½
             if (didDisconnectPlayers)
             {
                 yield return new WaitForSeconds(0.25f);
             }
         }
 
-        // 2) ·ÎÄÃ(È£½ºÆ®) runner Á¾·á ¹× ¾À ÀÌµ¿
+        // 2) ë¡œì»¬(í˜¸ìŠ¤íŠ¸) runner ì¢…ë£Œ ë° ì”¬ ì´ë™
         if (runner != null)
         {
             try
             {
                 runner.Shutdown(false);
-                Debug.Log("[RoomManager] ExitRoom: runner.Shutdown È£Ãâ");
+                Debug.Log("[RoomManager] ExitRoom: runner.Shutdown í˜¸ì¶œ");
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[RoomManager] ExitRoom runner.Shutdown ¿¹¿Ü: " + e.Message);
+                Debug.LogWarning("[RoomManager] ExitRoom runner.Shutdown ì˜ˆì™¸: " + e.Message);
             }
 
             try { Destroy(runner); } catch { }
@@ -454,7 +553,7 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
         else
         {
-            Debug.Log("[RoomManager] ExitRoom: runner ¾øÀ½");
+            Debug.Log("[RoomManager] ExitRoom: runner ì—†ìŒ");
         }
 
         yield return new WaitForSeconds(0.15f);
@@ -463,11 +562,10 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             ? SceneManager.GetActiveScene().name
             : sceneToLoadOnExit;
 
-        Debug.Log("[RoomManager] ExitRoom: ¾À ÀÌµ¿ -> " + targetScene);
+        Debug.Log("[RoomManager] ExitRoom: ì”¬ ì´ë™ -> " + targetScene);
         SceneManager.LoadScene(targetScene);
     }
 
-    // ³ª¸ÓÁö Äİ¹éµé(»ç¿ëÇÏÁö ¾ÊÀ¸¸é ºó ±¸Çö)
     public void OnConnectRequest(NetworkRunner r, NetworkRunnerCallbackArgs.ConnectRequest req, byte[] token) { }
     public void OnConnectFailed(NetworkRunner r, NetAddress address, NetConnectFailedReason reason) { Debug.LogWarning("OnConnectFailed: " + reason); }
     public void OnInput(NetworkRunner r, NetworkInput input) { }
