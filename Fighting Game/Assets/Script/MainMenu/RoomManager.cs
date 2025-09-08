@@ -32,12 +32,15 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     public bool ReturnToMainOnDisconnect = true; // 게스트가 호스트 종료시 자동으로 씬 이동할지
     public string sceneToLoadOnExit = ""; // 비어있으면 현재 씬을 다시 로드
 
+    [Header("StartManager 프리팹 (네트워크)")]
+    public NetworkPrefabRef startManagerPrefab; // Inspector에 등록된 Network Prefab 참조
+    private StartGameManager spawnedStartManager;   // 스폰된 StartManager 인스턴스 (로컬 참조)
+    private NetworkObject spawnedStartNetworkObject; // 스폰된 NetworkObject 참조 (despawn 용)
+
     private NetworkRunner runner;
     private NetworkSceneManagerDefault sceneManagerComponent;
     private bool isHost = false; // 이 인스턴스가 Host인지 (로컬 플래그)
     private bool isExiting = false; // 씬 전환 중복 방지
-
-    public Alarm alarm;
 
     // --- Join 시도 추적 플래그 ---
     private bool joinAttemptInProgress = false;
@@ -48,8 +51,6 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
     {
         if (createBtn != null) createBtn.onClick.AddListener(() => CreateRoomAsync());
         if (joinBtn != null) joinBtn.onClick.AddListener(() => JoinRoomAsync(joinInput != null ? joinInput.text.Trim() : ""));
-
-        alarm = GameObject.Find("alarmUI").GetComponent<Alarm>();
 
         FindPanels();
         ApplyRoleUI(); // 초기 UI 적용 (기본: guest view)
@@ -187,6 +188,66 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         catch (Exception ex) { Debug.LogWarning("ShutdownRunner 예외: " + ex.Message); }
     }
 
+    // 안전하게 runner 정리 후 씬 reload에서 사용
+    async Task SafeCleanupAndReloadScene(string statusMsg)
+    {
+        try
+        {
+            SetStatus(statusMsg);
+        }
+        catch { }
+
+        // 만약 StartManager가 스폰되었으면 despawn 시도 (호스트 측)
+        if (spawnedStartNetworkObject != null)
+        {
+            try
+            {
+                if (runner != null)
+                {
+                    try { runner.Despawn(spawnedStartNetworkObject); } catch { }
+                }
+                else
+                {
+                    try { Destroy(spawnedStartNetworkObject.gameObject); } catch { }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("SafeCleanup: StartManager despawn 예외: " + e.Message);
+            }
+            spawnedStartNetworkObject = null;
+            spawnedStartManager = null;
+        }
+
+        // 안전 정리
+        try
+        {
+            if (runner != null)
+            {
+                try { runner.Shutdown(false); } catch { }
+                await Task.Delay(100);
+                try { Destroy(runner); } catch { }
+                runner = null;
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("SafeCleanup 예외: " + e.Message);
+            runner = null;
+        }
+
+        // 플래그 초기화
+        joinAttemptInProgress = false;
+        joinAttemptSucceeded = false;
+        joinAttemptRunner = null;
+
+        // 씬 로드 (약간 딜레이 주고)
+        await Task.Delay(150);
+        string targetScene = string.IsNullOrEmpty(sceneToLoadOnExit) ? SceneManager.GetActiveScene().name : sceneToLoadOnExit;
+        Debug.Log("[RoomManager] 씬 재로딩: " + targetScene);
+        SceneManager.LoadScene(targetScene);
+    }
+
     // Host 생성: panels 강제 활성화 후 UI 전환
     public async void CreateRoomAsync()
     {
@@ -245,6 +306,10 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
 
                     // 생성 직후 상태 갱신 (호스트 자신 포함)
                     UpdateStatusWithCount(runner);
+
+                    // --- StartManager 스폰(호스트에서만) ---
+                    TrySpawnStartManager();
+
                     break;
                 }
             }
@@ -264,6 +329,75 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             isHost = false;
             ApplyRoleUI();
             if (runner != null) { await ShutdownRunner(); }
+        }
+    }
+
+    // StartManager 스폰 시도 (호스트에서만 수행)
+    void TrySpawnStartManager()
+    {
+        if (!isHost) return;
+        if (startManagerPrefab == null)
+        {
+            Debug.LogWarning("[RoomManager] startManagerPrefab이 할당되지 않았습니다. Inspector에서 설정하세요.");
+            return;
+        }
+
+        if (runner == null)
+        {
+            Debug.LogWarning("[RoomManager] TrySpawnStartManager: runner가 null입니다. 스폰 불가.");
+            return;
+        }
+
+        try
+        {
+            // runner.Spawn을 사용하여 네트워크 오브젝트 생성
+            // Fusion 버전에 따라 인자 시그니처가 다를 수 있으니 에러가 나면 알려줘
+            var netObj = runner.Spawn(startManagerPrefab, Vector3.zero, Quaternion.identity, null);
+            spawnedStartNetworkObject = netObj;
+            try
+            {
+                spawnedStartManager = netObj.GetComponent<StartGameManager>();
+            }
+            catch { spawnedStartManager = null; }
+
+            if (spawnedStartManager != null)
+            {
+                // StartManager에서 Start 신호가 올 때 RoomManager가 처리
+                spawnedStartManager.OnStartConfirmedByHost += OnHostRequestedStart;
+                Debug.Log("[RoomManager] StartManager 스폰 및 이벤트 구독 완료");
+            }
+            else
+            {
+                Debug.LogWarning("[RoomManager] Spawn된 오브젝트에 StartManager 컴포넌트가 없음");
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[RoomManager] StartManager 스폰 실패: " + e.Message);
+            spawnedStartManager = null;
+            spawnedStartNetworkObject = null;
+        }
+    }
+
+    // 호스트가 Start를 눌렀을 때 실행되는 콜백
+    void OnHostRequestedStart()
+    {
+        Debug.Log("[RoomManager] 호스트가 Start 요청함. 네트워크 씬 로드 처리 시도");
+
+        // TODO: 네트워크 씬 매니저를 통해 씬을 로드하도록 여기를 프로젝트 맞춤으로 구현하세요.
+        // 예시(단순 로컬 로드 — 네트워크 동기화가 필요한 경우 프로젝트의 네트워크 씬 매니저 API로 변경):
+        string gameSceneName = "GameScene"; // 실제 게임 씬 이름으로 바꿀 것
+        try
+        {
+            // 만약 NetworkSceneManagerDefault 같은 네트워크 씬 매니저를 사용하고 있다면
+            // 해당 매니저의 LoadScene API로 교체하세요.
+            // 예: sceneManagerComponent.LoadScene(gameSceneName, LoadSceneMode.Single);
+            Debug.Log("[RoomManager] (현재는 로컬 SceneManager.LoadScene 호출) 씬: " + gameSceneName);
+            SceneManager.LoadScene(gameSceneName);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[RoomManager] 게임 씬 로드 중 예외: " + e.Message);
         }
     }
 
@@ -356,52 +490,12 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
     }
 
-    async Task SafeCleanupAndReloadScene(string statusMsg)
-    {
-        try
-        {
-            SetStatus(statusMsg);
-        }
-        catch { }
 
-        // 안전 정리
-        try
-        {
-            if (runner != null)
-            {
-                try { runner.Shutdown(false); } catch { }
-                await Task.Delay(100);
-                try { Destroy(runner); } catch { }
-                runner = null;
-            }
-        }
-        catch (Exception e)
-        {
-            Debug.LogWarning("SafeCleanup 예외: " + e.Message);
-            runner = null;
-        }
-
-        // 플래그 초기화
-        joinAttemptInProgress = false;
-        joinAttemptSucceeded = false;
-        joinAttemptRunner = null;
-
-        await Task.Delay(150);
-        string targetScene = string.IsNullOrEmpty(sceneToLoadOnExit) ? SceneManager.GetActiveScene().name : sceneToLoadOnExit;
-        Debug.Log("[RoomManager] 씬 재로딩: " + targetScene);
-        SceneManager.LoadScene(targetScene);
-        alarm.StartCoroutine(alarm.WriteError("Wrong Room Code!"));
-    }
-
-    // ============================
-    // INetworkRunnerCallbacks
-    // ============================
     public void OnPlayerJoined(NetworkRunner r, PlayerRef player)
     {
         int count = r.ActivePlayers.Count();
         Debug.Log($"[Host] 플레이어 접속 감지. 현재 인원: {count}");
 
-        // 접속자 수 갱신 (호스트 화면)
         UpdateStatusWithCount(r);
 
         if (count > maxPlayers)
@@ -417,19 +511,16 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         UpdateStatusWithCount(r);
     }
 
-    // 클라이언트/호스트 전부에서 연결이 완전히 이루어진 시점
     public void OnConnectedToServer(NetworkRunner r)
     {
         Debug.Log("OnConnectedToServer 호출됨.");
 
         EnsurePanelsVisible();
 
-        // 최종 연결이 확정된 시점에서 접속자 수로 상태 갱신
         UpdateStatusWithCount(r);
 
         ApplyRoleUI();
 
-        // join 시도 중이면 성공 처리
         if (joinAttemptInProgress && joinAttemptRunner == r)
         {
             joinAttemptSucceeded = true;
@@ -439,21 +530,17 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
     }
 
-    // 연결 끊김
     public void OnDisconnectedFromServer(NetworkRunner r, NetDisconnectReason reason)
     {
         Debug.Log($"OnDisconnectedFromServer 호출. 이유: {reason}");
 
-        // 만약 입장 시도 중에 끊긴 거라면(= 방 없음 또는 거부) 씬을 다시 로드
         if (joinAttemptInProgress && joinAttemptRunner == r && !isHost)
         {
             Debug.Log("[RoomManager] 입장 시도 중 연결 끊김 감지 -> 씬 재로딩 처리");
-            // 안전 정리 및 씬 이동 (코루틴/비동기로 처리)
             _ = SafeCleanupAndReloadScene("입장 실패: 방이 존재하지 않거나 거부되었습니다.");
             return;
         }
 
-        // 일반적인 연결 끊김 처리
         SetStatus("연결 끊김");
         _ = ShutdownRunner();
 
@@ -468,7 +555,6 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         }
     }
 
-    // 게스트가 자동으로 돌아갈 때 사용하는 코루틴
     IEnumerator LoadSceneOnDisconnectCoroutine()
     {
         isExiting = true;
@@ -482,9 +568,6 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
         SceneManager.LoadScene(targetScene);
     }
 
-    // ----------------------------
-    // ExitRoom: 버튼에서 호출하여 현재 세션을 안전하게 종료하고 씬 리로드
-    // ----------------------------
     public void ExitRoom()
     {
         if (isExiting) return;
@@ -540,7 +623,27 @@ public class RoomManager : MonoBehaviour, INetworkRunnerCallbacks
             }
         }
 
-        // 2) 로컬(호스트) runner 종료 및 씬 이동
+        if (spawnedStartNetworkObject != null)
+        {
+            try
+            {
+                if (runner != null)
+                {
+                    try { runner.Despawn(spawnedStartNetworkObject); } catch { }
+                }
+                else
+                {
+                    try { Destroy(spawnedStartNetworkObject.gameObject); } catch { }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("ExitRoom: StartManager despawn 예외: " + e.Message);
+            }
+            spawnedStartNetworkObject = null;
+            spawnedStartManager = null;
+        }
+
         if (runner != null)
         {
             try

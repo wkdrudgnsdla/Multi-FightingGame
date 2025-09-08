@@ -1,71 +1,160 @@
 using System;
-using System.Collections;
+using System.Collections.Generic;
+using Fusion;
+using Fusion.Sockets;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using UnityEngine.UI;
-using Fusion; // NetworkRunner 찾기 위해
 
-public class StartGameManager : MonoBehaviour
+public class StartGameManager : NetworkBehaviour
 {
     [Header("UI")]
-    public Button exitButton;            // Inspector에 ExitRoom 버튼 연결
-    public float waitBeforeReload = 0.15f; // 종료 후 잠깐 기다릴 시간 (초)
+    public Button readyButton;        // 로컬 플레이어가 누르는 Ready 버튼
+    public Text readyButtonText;      // Ready / Cancel 표시용
+    public Button startButton;        // 호스트 전용 Start 버튼 (호스트만 활성화)
+    public Text hostReadyText;        // 호스트 화면에 호스트 준비 여부 표시 (예시)
+    public Text guestReadyText;       // 호스트 화면에 게스트 준비 여부 표시 (예시)
+    public Text statusText;           // 간단 상태 메시지
 
-    // 비워두면 현재 씬을 다시 로드
-    public string sceneNameToReload = "";
+    [Header("설정")]
+    public int maxPlayers = 2;
+
+    private List<PlayerRef> readyPlayers = new List<PlayerRef>();
+
+    // Networked 필드: Fusion 버전에 맞게 기본형 사용
+    [Networked]
+    public int ReadyCount { get; set; }
+
+    [Networked]
+    public bool AllReady { get; set; }
+
+    private bool localReady = false;
+    public event Action OnStartConfirmedByHost;
 
     void Start()
     {
-        // 씬 이름 기본값 설정
-        if (string.IsNullOrEmpty(sceneNameToReload))
-            sceneNameToReload = SceneManager.GetActiveScene().name;
-
-        if (exitButton != null)
-            exitButton.onClick.AddListener(OnExitRoomClicked);
-        else
-            Debug.LogWarning("[StartGameManager] exitButton이 연결되지 않았습니다. Inspector에 버튼을 넣어주세요.");
-    }
-
-    // 버튼 콜백
-    public void OnExitRoomClicked()
-    {
-        // 버튼 중복 클릭 방지
-        if (exitButton != null)
-            exitButton.interactable = false;
-
-        StartCoroutine(ExitAndReloadCoroutine());
-    }
-
-    // 코루틴: Runner 종료 -> 잠깐 대기 -> 씬 재로드
-    IEnumerator ExitAndReloadCoroutine()
-    {
-        NetworkRunner runner = FindObjectOfType<NetworkRunner>();
-
-        if (runner != null)
+        if (readyButton != null)
         {
-            Debug.Log("[StartGameManager] NetworkRunner 발견 - 세션 종료 시도");
-            try
-            {
-                // Fusion API의 Shutdown 호출 (false로 예시)
-                runner.Shutdown(false);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[StartGameManager] runner.Shutdown 예외: " + ex.Message);
-            }
+            readyButton.onClick.RemoveAllListeners();
+            readyButton.onClick.AddListener(OnReadyButtonClicked);
+        }
+        if (startButton != null)
+        {
+            startButton.onClick.RemoveAllListeners();
+            startButton.onClick.AddListener(OnStartButtonClicked);
+            startButton.interactable = false;
+        }
 
-            // 안전하게 조금 대기 (네트워크 정리 시간을 주기 위해)
-            yield return new WaitForSeconds(waitBeforeReload);
+        UpdateLocalUI();
+    }
+
+    void UpdateLocalUI()
+    {
+        if (readyButtonText != null)
+            readyButtonText.text = localReady ? "Cancel Ready" : "Ready";
+
+        if (statusText != null)
+            statusText.text = $"ReadyCount: {ReadyCount}/{maxPlayers}  AllReady: {AllReady}";
+    }
+
+    public void OnReadyButtonClicked()
+    {
+        localReady = !localReady;
+        UpdateLocalUI();
+
+        try
+        {
+            // RpcInfo 자리에는 default를 넣어 호출 (클라이언트에서 호출 시 안전한 패턴)
+            RPC_SetReady(default, localReady);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[StartGameManager] RPC_SetReady 호출 예외: " + e.Message);
+        }
+    }
+
+    public void OnStartButtonClicked()
+    {
+        if (!Object.HasStateAuthority)
+        {
+            Debug.LogWarning("[StartGameManager] OnStartButtonClicked: 로컬이 StateAuthority(Host)가 아님.");
+            return;
+        }
+
+        if (!AllReady)
+        {
+            Debug.Log("[StartGameManager] 아직 모든 준비가 되지 않음.");
+            return;
+        }
+
+        // StateAuthority에서 모든 클라이언트로 Start 신호 전송
+        RPC_StartGame(default);
+    }
+
+    // 클라이언트 -> Host(StateAuthority)
+    [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+    public void RPC_SetReady(RpcInfo info, bool ready)
+    {
+        if (!Object.HasStateAuthority)
+            return;
+
+        PlayerRef sender = info.Source;
+
+        if (ready)
+        {
+            if (!readyPlayers.Contains(sender))
+                readyPlayers.Add(sender);
         }
         else
         {
-            Debug.Log("[StartGameManager] NetworkRunner를 찾지 못함. 이미 종료되었거나 다른 객체가 관리 중일 수 있음.");
+            if (readyPlayers.Contains(sender))
+                readyPlayers.Remove(sender);
         }
 
-        // 2) 씬 재로드
-        Debug.Log("[StartGameManager] 씬 재로드: " + sceneNameToReload);
-        SceneManager.LoadScene(sceneNameToReload);
+        ReadyCount = readyPlayers.Count;
+        AllReady = (ReadyCount >= maxPlayers);
 
-        yield break;
+        // Host가 모든 클라이언트에게 현재 상태를 브로드캐스트 (첫 인자에 default)
+        RPC_BroadcastState(default, ReadyCount, AllReady);
+    }
+
+    // Host(StateAuthority) -> All
+    [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
+    public void RPC_BroadcastState(RpcInfo info, int readyCount, bool allReady)
+    {
+        ReadyCount = readyCount;
+        AllReady = allReady;
+
+        UpdateLocalUI();
+
+        if (Object.HasStateAuthority && startButton != null)
+        {
+            startButton.interactable = AllReady;
+        }
+    }
+
+    // Host(StateAuthority) -> All : 게임 시작 신호
+    [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
+    public void RPC_StartGame(RpcInfo info)
+    {
+        Debug.Log("[StartGameManager] RPC_StartGame 호출 - 게임 시작 신호 수신");
+        OnStartConfirmedByHost?.Invoke();
+    }
+
+    public override void Spawned()
+    {
+        base.Spawned();
+        if (Object.HasStateAuthority)
+        {
+            readyPlayers.Clear();
+            ReadyCount = 0;
+            AllReady = false;
+        }
+
+        UpdateLocalUI();
+    }
+
+    public void RefreshLocalUI()
+    {
+        UpdateLocalUI();
     }
 }
